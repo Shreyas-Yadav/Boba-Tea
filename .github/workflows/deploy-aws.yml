@@ -2,13 +2,21 @@ name: Deploy AWS
 
 on:
   workflow_dispatch:
-  push:
+  workflow_run:
+    workflows:
+      - CI
     branches:
-      - codex/recraft-web-demo
+      - main
+    types:
+      - completed
 
 permissions:
   contents: read
   id-token: write
+
+concurrency:
+  group: deploy-aws-production
+  cancel-in-progress: true
 
 env:
   AWS_REGION: us-west-2
@@ -26,9 +34,18 @@ env:
 
 jobs:
   deploy:
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      (
+        github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.event == 'push' &&
+        github.event.workflow_run.head_branch == 'main'
+      )
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.ref }}
 
       - uses: aws-actions/configure-aws-credentials@v4
         with:

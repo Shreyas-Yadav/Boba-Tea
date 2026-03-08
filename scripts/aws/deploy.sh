@@ -213,6 +213,28 @@ docker run -d \
 EOF
 }
 
+cleanup_old_images() {
+  local image_list_path="${temp_dir}/old-images.json"
+  local delete_payload_path="${temp_dir}/delete-images.json"
+
+  aws ecr describe-images \
+    --region "${AWS_REGION}" \
+    --repository-name "${ECR_REPOSITORY}" \
+    --query "sort_by(imageDetails,&imagePushedAt)[?imageTags && imageTags[0] != '${IMAGE_TAG}'].{imageTag:imageTags[0]}" \
+    --output json > "${image_list_path}"
+
+  if ! jq -e 'length > 0' "${image_list_path}" >/dev/null; then
+    return 0
+  fi
+
+  jq '{imageIds: map({imageTag: .imageTag})}' "${image_list_path}" > "${delete_payload_path}"
+
+  aws ecr batch-delete-image \
+    --region "${AWS_REGION}" \
+    --repository-name "${ECR_REPOSITORY}" \
+    --cli-input-json "file://${delete_payload_path}" >/dev/null
+}
+
 launch_instance() {
   local security_group_id="$1"
   local ami_id
@@ -307,6 +329,8 @@ if [[ -n "${existing_instance_ids}" && "${existing_instance_ids}" != "None" ]]; 
     aws ec2 terminate-instances --region "${AWS_REGION}" --instance-ids ${old_instance_ids} >/dev/null
   fi
 fi
+
+cleanup_old_images
 
 echo "Deployment complete."
 echo "EC2 instance: ${new_instance_id}"

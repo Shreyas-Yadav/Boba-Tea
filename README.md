@@ -109,6 +109,7 @@ This repo now supports a single-container AWS deployment on EC2:
 - backend secrets and model config are loaded from AWS SSM Parameter Store
 - one public EC2 instance serves both the web app and the API
 - an Elastic IP keeps the demo URL stable across redeploys
+- pull requests to `main` run CI, and successful pushes to `main` trigger deployment
 
 Expected AWS defaults:
 
@@ -144,4 +145,4 @@ cd /Users/manmohan/Documents/Karathpy/Boba-Tea
 scripts/aws/deploy.sh
 ```
 
-GitHub Actions deployment is configured in [deploy-aws.yml](/Users/manmohan/Documents/Karathpy/Boba-Tea/.github/workflows/deploy-aws.yml) using AWS OIDC. The workflow assumes the role `arn:aws:iam::883107058766:role/GitHubActionsRecraftDeployRole`.
+GitHub Actions CI is configured in [ci.yml](/Users/manmohan/Documents/Karathpy/Boba-Tea/.github/workflows/ci.yml). Deployment is configured in [deploy-aws.yml](/Users/manmohan/Documents/Karathpy/Boba-Tea/.github/workflows/deploy-aws.yml) using AWS OIDC. The deploy workflow only runs after CI succeeds on a push to `main`, or when triggered manually, and assumes the role `arn:aws:iam::883107058766:role/GitHubActionsRecraftDeployRole`.
