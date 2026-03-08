@@ -5,7 +5,6 @@ import {
   generateVisualization,
   getHealth,
   submitScan,
-  type HealthResponse,
   type Idea,
   type ScanResponse,
   type TutorialLink,
@@ -163,9 +162,7 @@ function App() {
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
   const [result, setResult] = useState<ScanResponse | null>(null)
   const [history, setHistory] = useState<ScanResponse[]>(() => loadHistory())
-  const [health, setHealth] = useState<HealthResponse | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [healthError, setHealthError] = useState<string | null>(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [activeIdeaId, setActiveIdeaId] = useState<string | null>(null)
   const [visualizations, setVisualizations] = useState<Record<string, VisualizationState>>({})
@@ -241,16 +238,10 @@ function App() {
       try {
         appendDebug('Health check started')
         const nextHealth = await getHealth()
-        setHealth(nextHealth)
-        setHealthError(null)
         appendDebug(
           `Health check passed: gemini=${nextHealth.gemini_configured}, analysis=${nextHealth.analysis_model}, image=${nextHealth.image_model}`,
         )
       } catch (healthCheckError) {
-        setHealth(null)
-        setHealthError(
-          healthCheckError instanceof Error ? healthCheckError.message : 'Backend is unavailable.',
-        )
         appendDebug(
           `Health check failed: ${healthCheckError instanceof Error ? healthCheckError.message : 'unknown error'
           }`,
