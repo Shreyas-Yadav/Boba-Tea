@@ -14,7 +14,7 @@ EC2_SECURITY_GROUP_NAME="${EC2_SECURITY_GROUP_NAME:-RecraftWebDemoSg}"
 EC2_INSTANCE_NAME="${EC2_INSTANCE_NAME:-recraft-web-demo}"
 EC2_EIP_NAME="${EC2_EIP_NAME:-recraft-web-demo-eip}"
 SSM_PREFIX="${SSM_PREFIX:-/recraft/prod}"
-INSTANCE_TYPE="${INSTANCE_TYPE:-t4g.small}"
+INSTANCE_TYPE="${INSTANCE_TYPE:-t4g.nano}"
 AMI_SSM_PARAMETER="${AMI_SSM_PARAMETER:-/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64}"
 IMAGE_TAG="${IMAGE_TAG:-$(git rev-parse --short HEAD)}"
 

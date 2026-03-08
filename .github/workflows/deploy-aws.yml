@@ -28,7 +28,7 @@ env:
   EC2_SECURITY_GROUP_NAME: RecraftWebDemoSg
   EC2_INSTANCE_NAME: recraft-web-demo
   EC2_EIP_NAME: recraft-web-demo-eip
-  INSTANCE_TYPE: t4g.small
+  INSTANCE_TYPE: t4g.nano
   SSM_PREFIX: /recraft/prod
   AWS_GITHUB_DEPLOY_ROLE_ARN: arn:aws:iam::883107058766:role/GitHubActionsRecraftDeployRole
 
