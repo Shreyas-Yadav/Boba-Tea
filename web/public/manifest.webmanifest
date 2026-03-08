@@ -1,0 +1,17 @@
+{
+  "name": "ReCraft Demo",
+  "short_name": "ReCraft",
+  "description": "Reuse everyday waste with camera-powered DIY ideas.",
+  "theme_color": "#f4f1e8",
+  "background_color": "#f4f1e8",
+  "display": "standalone",
+  "start_url": "/",
+  "icons": [
+    {
+      "src": "/recraft-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

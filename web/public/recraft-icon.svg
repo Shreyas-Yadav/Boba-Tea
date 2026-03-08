@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="ReCraft icon">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#edf3df" />
+      <stop offset="100%" stop-color="#d1e2c4" />
+    </linearGradient>
+    <linearGradient id="leaf" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1d6b4c" />
+      <stop offset="100%" stop-color="#2e8b57" />
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="120" fill="url(#bg)" />
+  <path d="M334 115c-60 12-120 58-156 120-24 42-31 81-24 124 44-12 80-30 110-56 51-42 87-100 98-171-8-8-16-13-28-17z" fill="url(#leaf)" />
+  <path d="M158 301c44-8 79-20 107-38 41-27 73-63 98-112 2 55-14 105-46 148-38 50-92 82-159 92-10-35-10-62 0-90z" fill="#f26b1d" opacity=".92" />
+  <circle cx="154" cy="156" r="22" fill="#f7b548" />
+</svg>

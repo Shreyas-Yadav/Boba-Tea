@@ -1,0 +1,15 @@
+.DS_Store
+.env
+.env.local
+.env.*
+.envrc
+!.env.example
+!**/.env.example
+.venv/
+__pycache__/
+*.pyc
+node_modules/
+dist/
+.vite/
+coverage/
+.pytest_cache/
