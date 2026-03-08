@@ -15,7 +15,7 @@ EC2_INSTANCE_NAME="${EC2_INSTANCE_NAME:-recraft-web-demo}"
 EC2_EIP_NAME="${EC2_EIP_NAME:-recraft-web-demo-eip}"
 SSM_PREFIX="${SSM_PREFIX:-/recraft/prod}"
 INSTANCE_TYPE="${INSTANCE_TYPE:-t3.micro}"
-AMI_SSM_PARAMETER="${AMI_SSM_PARAMETER:-/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64}"
+AMI_SSM_PARAMETER="${AMI_SSM_PARAMETER:-/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64}"
 IMAGE_TAG="${IMAGE_TAG:-$(git rev-parse --short HEAD)}"
 
 ECR_REGISTRY="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
