@@ -34,6 +34,101 @@ type TutorialLinksState = {
   error?: string
 }
 
+type StepStatus = 'pending' | 'active' | 'done' | 'error'
+
+type ProcessingStep = {
+  id: string
+  label: string
+  detail: string
+  status: StepStatus
+}
+
+function makeInitialSteps(): ProcessingStep[] {
+  return [
+    { id: 'scan', label: 'Scanning object', detail: 'Identifying item & generating reuse ideas', status: 'pending' },
+    { id: 'preview', label: 'Generating preview', detail: 'Rendering a realistic transformation image', status: 'pending' },
+    { id: 'tutorials', label: 'Fetching tutorials', detail: 'Finding grounded learning resources', status: 'pending' },
+  ]
+}
+
+function StepIcon({ status }: { status: StepStatus }) {
+  if (status === 'done') {
+    return (
+      <div className="tracker-step-left icon--done" aria-label="Done">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+          <polyline points="20 6 9 17 4 12"></polyline>
+        </svg>
+      </div>
+    )
+  }
+  if (status === 'error') {
+    return (
+      <div className="tracker-step-left icon--error" aria-label="Error">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+          <line x1="18" y1="6" x2="6" y2="18"></line>
+          <line x1="6" y1="6" x2="18" y2="18"></line>
+        </svg>
+      </div>
+    )
+  }
+  if (status === 'active') {
+    return (
+      <div className="tracker-step-left icon--active" aria-label="In progress">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+          <circle cx="12" cy="12" r="10"></circle>
+          <path d="M12 2a10 10 0 0 1 10 10"></path>
+        </svg>
+      </div>
+    )
+  }
+  return (
+    <div className="tracker-step-left icon--pending" aria-label="Pending">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+        <circle cx="12" cy="12" r="10"></circle>
+      </svg>
+    </div>
+  )
+}
+
+function ProcessingTracker({ steps }: { steps: ProcessingStep[] }) {
+  const activeCount = steps.filter((s) => s.status === 'done').length
+  const pct = Math.round((activeCount / steps.length) * 100)
+  const allDone = steps.every((s) => s.status === 'done' || s.status === 'error')
+
+  return (
+    <div className="processing-tracker">
+      {/* thin progress bar across top */}
+      <div className="pbar-track">
+        <div
+          className={`pbar-fill ${allDone ? 'pbar-fill--complete' : ''}`}
+          style={{ width: `${pct}%` }}
+        />
+      </div>
+
+      <div className="tracker-steps">
+        {steps.map((step, i) => (
+          <div
+            key={step.id}
+            className={`tracker-step tracker-step--${step.status}`}
+            style={{ animationDelay: `${i * 80}ms` }}
+          >
+            <StepIcon status={step.status} />
+            <div className="tracker-step-body">
+              <p className="tracker-step-label">{step.label}</p>
+              <p className="tracker-step-detail">{step.detail}</p>
+            </div>
+            <div className="tracker-step-badge">
+              {step.status === 'active' && <span className="badge badge--active">Running</span>}
+              {step.status === 'done' && <span className="badge badge--done">Done</span>}
+              {step.status === 'error' && <span className="badge badge--error">Failed</span>}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 function loadHistory() {
   const rawHistory = localStorage.getItem(HISTORY_KEY)
   if (!rawHistory) {
@@ -76,8 +171,18 @@ function App() {
   const [visualizations, setVisualizations] = useState<Record<string, VisualizationState>>({})
   const [tutorialLinks, setTutorialLinks] = useState<Record<string, TutorialLinksState>>({})
   const [debugEvents, setDebugEvents] = useState<DebugEvent[]>([])
+  const [processingSteps, setProcessingSteps] = useState<ProcessingStep[] | null>(null)
   const cameraInputRef = useRef<HTMLInputElement | null>(null)
   const galleryInputRef = useRef<HTMLInputElement | null>(null)
+
+  /** Helper to update a single step's status. */
+  const updateStep = useCallback((id: string, status: StepStatus) => {
+    setProcessingSteps((prev) =>
+      prev
+        ? prev.map((s) => (s.id === id ? { ...s, status } : s))
+        : prev,
+    )
+  }, [])
 
   const appendDebug = useCallback((message: string) => {
     const timestamp = new Date().toLocaleTimeString()
@@ -147,8 +252,7 @@ function App() {
           healthCheckError instanceof Error ? healthCheckError.message : 'Backend is unavailable.',
         )
         appendDebug(
-          `Health check failed: ${
-            healthCheckError instanceof Error ? healthCheckError.message : 'unknown error'
+          `Health check failed: ${healthCheckError instanceof Error ? healthCheckError.message : 'unknown error'
           }`,
         )
       }
@@ -174,6 +278,7 @@ function App() {
     setVisualizations({})
     setTutorialLinks({})
     setActiveIdeaId(null)
+    setProcessingSteps(null)
     appendDebug(
       nextFile
         ? `File selected: ${nextFile.name} (${Math.round(nextFile.size / 1024)} KB, ${nextFile.type || 'unknown type'})`
@@ -185,6 +290,10 @@ function App() {
     appendDebug(
       `Visualization request started for ${idea.id} (${idea.title}) using ${scanResult.detected_label}`,
     )
+
+    // Mark 'preview' step active
+    updateStep('preview', 'active')
+
     setVisualizations((previous) => ({
       ...previous,
       [idea.id]: { status: 'loading' },
@@ -207,6 +316,9 @@ function App() {
         ...previous,
         [idea.id]: { status: 'ready', response },
       }))
+
+      // Preview done
+      updateStep('preview', 'done')
     } catch (visualizationError) {
       const errorMessage =
         visualizationError instanceof Error
@@ -220,11 +332,18 @@ function App() {
           error: errorMessage,
         },
       }))
+
+      // Preview errored (don't block rest of flow)
+      updateStep('preview', 'error')
     }
-  }, [appendDebug])
+  }, [appendDebug, updateStep])
 
   const requestTutorialLinks = useCallback(async (idea: Idea, scanResult: ScanResponse) => {
     appendDebug(`Tutorial links request started for ${idea.id} (${idea.title})`)
+
+    // Mark tutorials step active
+    updateStep('tutorials', 'active')
+
     setTutorialLinks((previous) => ({
       ...previous,
       [idea.id]: { status: 'loading' },
@@ -256,13 +375,16 @@ function App() {
           ideas: previous.ideas.map((candidate) =>
             candidate.id === idea.id
               ? {
-                  ...candidate,
-                  tutorial_links: response.tutorial_links,
-                }
+                ...candidate,
+                tutorial_links: response.tutorial_links,
+              }
               : candidate,
           ),
         }
       })
+
+      // Tutorials done
+      updateStep('tutorials', 'done')
     } catch (tutorialLinksError) {
       const errorMessage =
         tutorialLinksError instanceof Error
@@ -276,8 +398,11 @@ function App() {
           error: errorMessage,
         },
       }))
+
+      // Tutorials errored
+      updateStep('tutorials', 'error')
     }
-  }, [appendDebug])
+  }, [appendDebug, updateStep])
 
   useEffect(() => {
     if (!result || !activeIdea || !selectedFile) {
@@ -330,6 +455,11 @@ function App() {
       return
     }
 
+    // Initialize processing steps
+    const freshSteps = makeInitialSteps()
+    freshSteps[0] = { ...freshSteps[0], status: 'active' }
+    setProcessingSteps(freshSteps)
+
     try {
       setIsSubmitting(true)
       setError(null)
@@ -340,6 +470,10 @@ function App() {
       const startedAt = performance.now()
       const nextResult = await submitScan(selectedFile)
       const elapsedMs = Math.round(performance.now() - startedAt)
+
+      // Scan done
+      updateStep('scan', 'done')
+
       setResult(nextResult)
       setActiveIdeaId(nextResult.ideas[0]?.id ?? null)
       appendDebug(
@@ -359,6 +493,7 @@ function App() {
       const errorMessage = scanError instanceof Error ? scanError.message : 'Scan failed.'
       setError(errorMessage)
       appendDebug(`Scan request failed: ${errorMessage}`)
+      updateStep('scan', 'error')
     } finally {
       setIsSubmitting(false)
     }
@@ -371,6 +506,7 @@ function App() {
     setVisualizations({})
     setTutorialLinks({})
     setActiveIdeaId(null)
+    setProcessingSteps(null)
     appendDebug('Flow reset')
   }
 
@@ -381,6 +517,7 @@ function App() {
     setVisualizations({})
     setTutorialLinks({})
     setActiveIdeaId(entry.ideas[0]?.id ?? null)
+    setProcessingSteps(null)
     appendDebug(`Loaded history entry ${entry.scan_id} (${entry.detected_label})`)
   }
 
@@ -389,11 +526,13 @@ function App() {
     appendDebug(`Idea selected: ${idea.id} (${idea.title})`)
   }
 
+  // Determine if we should show the tracker
+  const showTracker = !!processingSteps
+
   return (
     <main className="app-shell">
       <section className="hero-panel">
         <div className="hero-copy-block">
-          <p className="eyebrow">ReCraft web demo</p>
           <h1>Scan waste. Preview a second life.</h1>
           <p className="hero-copy">
             Upload one object, get grounded reuse ideas, step-by-step guidance, and a realistic
@@ -401,21 +540,9 @@ function App() {
           </p>
         </div>
 
-        <div className="status-row">
-          <span className={`status-pill ${health ? 'status-pill--ok' : 'status-pill--warn'}`}>
-            API {health ? 'connected' : 'offline'}
-          </span>
-          <span className={`status-pill ${health?.gemini_configured === 'yes' ? 'status-pill--ok' : 'status-pill--muted'}`}>
-            Gemini {health?.gemini_configured === 'yes' ? 'key present' : 'not configured'}
-          </span>
-          {health ? <span className="status-note">{health.analysis_model}</span> : null}
-          {health ? <span className="status-note">{health.image_model}</span> : null}
-        </div>
-
-        {healthError ? <p className="status-message error-message">{healthError}</p> : null}
-
         <div className="capture-grid">
           <button type="button" className="capture-card" onClick={() => cameraInputRef.current?.click()}>
+            <span className="capture-icon"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z" /><circle cx="12" cy="13" r="4" /></svg></span>
             <span className="capture-kicker">Camera</span>
             <span className="capture-title">Take a photo</span>
             <span className="capture-copy">Open the mobile camera or capture picker.</span>
@@ -427,6 +554,7 @@ function App() {
             className="capture-card secondary"
             onClick={() => galleryInputRef.current?.click()}
           >
+            <span className="capture-icon"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2" /><circle cx="8.5" cy="8.5" r="1.5" /><polyline points="21 15 16 10 5 21" /></svg></span>
             <span className="capture-kicker">Library</span>
             <span className="capture-title">Upload from gallery</span>
             <span className="capture-copy">Use an existing photo from your device.</span>
@@ -462,11 +590,11 @@ function App() {
 
         <div className="scan-actions">
           <button
-            className="primary-button primary-button--wide"
+            className={`primary-button primary-button--wide ${isSubmitting ? 'primary-button--loading' : ''}`}
             onClick={handleSubmit}
             disabled={!selectedFile || isSubmitting}
           >
-            {isSubmitting ? 'Analyzing object...' : 'Generate reuse plan'}
+            <span className="btn-text">{isSubmitting ? 'Analyzing object…' : 'Generate reuse plan'}</span>
           </button>
           <button className="ghost-button" onClick={resetFlow} disabled={!selectedFile && !result && !error}>
             Reset
@@ -474,24 +602,14 @@ function App() {
         </div>
 
         {error ? <p className="status-message error-message">{error}</p> : null}
+
+        {/* ── Progress tracker ─────────────────────────────── */}
+        {showTracker ? (
+          <ProcessingTracker steps={processingSteps!} />
+        ) : null}
       </section>
 
       <section className="workbench-grid">
-        <article className="surface-card preview-card">
-          <div className="section-heading">
-            <p className="section-kicker">Original</p>
-            <h2>Uploaded object</h2>
-          </div>
-
-          {previewUrl ? (
-            <img className="preview-image" src={previewUrl} alt="Selected item preview" />
-          ) : (
-            <div className="empty-state">
-              <p>No photo selected yet.</p>
-              <span>Choose a photo above and the original item will appear here.</span>
-            </div>
-          )}
-        </article>
 
         <article className="surface-card featured-card">
           <div className="section-heading">
@@ -499,7 +617,28 @@ function App() {
             <h2>{activeIdea ? activeIdea.title : 'Pick a photo to generate ideas'}</h2>
           </div>
 
-          {result && activeIdea ? (
+          {isSubmitting ? (
+            <div className="skeleton-layout">
+              <div className="skeleton-item-row">
+                <div className="skeleton-text short skeleton-shimmer" style={{ flex: 1 }} />
+                <div className="skeleton-text short skeleton-shimmer" style={{ flex: 1 }} />
+              </div>
+              <div>
+                <div className="skeleton-text skeleton-shimmer" />
+                <div className="skeleton-text medium skeleton-shimmer" />
+              </div>
+
+              <div className="concept-grid">
+                <div className="skeleton-concept-panel skeleton-shimmer" />
+                <div className="skeleton-concept-panel skeleton-shimmer" />
+              </div>
+
+              <div className="skeleton-item-row">
+                <div className="skeleton-box skeleton-shimmer" style={{ flex: 1 }} />
+                <div className="skeleton-box skeleton-shimmer" style={{ flex: 1 }} />
+              </div>
+            </div>
+          ) : result && activeIdea ? (
             <>
               <div className="result-summary">
                 <div>
@@ -521,9 +660,8 @@ function App() {
 
               {result.provider_notice ? (
                 <p
-                  className={`status-message ${
-                    result.provider_state === 'fallback_invalid_key' ? 'warning-message' : 'muted-message'
-                  }`}
+                  className={`status-message ${result.provider_state === 'fallback_invalid_key' ? 'warning-message' : 'muted-message'
+                    }`}
                 >
                   {result.provider_notice}
                 </p>
@@ -571,7 +709,7 @@ function App() {
                   {activeVisualization?.status === 'loading' ? (
                     <div className="concept-loading">
                       <div className="concept-shimmer" />
-                      <p>Rendering a realistic concept preview...</p>
+                      <p>Rendering a realistic concept preview…</p>
                     </div>
                   ) : null}
 
@@ -623,24 +761,31 @@ function App() {
                     <p className="detail-kicker">Related tutorials</p>
                     <p className="detail-copy">
                       {activeTutorialLinksState?.status === 'loading'
-                        ? 'Refreshing grounded links for this idea...'
+                        ? 'Refreshing grounded links for this idea…'
                         : 'Grounded to this exact idea when available, otherwise quick fallback links.'}
                     </p>
                   </div>
                 </div>
 
-                <div className="link-list">
-                  {activeTutorialLinks.map((link) => (
-                    <a key={link.id} className="link-card" href={link.url} target="_blank" rel="noreferrer">
-                      <div className="link-topline">
-                        <span className={`source-pill source-pill--${link.source}`}>{link.source}</span>
-                        <span className="link-arrow">Open</span>
-                      </div>
-                      <h3>{link.title}</h3>
-                      <p>{link.reason}</p>
-                    </a>
-                  ))}
-                </div>
+                {activeTutorialLinksState?.status === 'loading' ? (
+                  <div className="link-list">
+                    <div className="skeleton-card skeleton-shimmer" style={{ height: '110px' }} />
+                    <div className="skeleton-card skeleton-shimmer" style={{ height: '110px' }} />
+                  </div>
+                ) : (
+                  <div className="link-list">
+                    {activeTutorialLinks.map((link) => (
+                      <a key={link.id} className="link-card" href={link.url} target="_blank" rel="noreferrer">
+                        <div className="link-topline">
+                          <span className={`source-pill source-pill--${link.source}`}>{link.source}</span>
+                          <span className="link-arrow">Open ↗</span>
+                        </div>
+                        <h3>{link.title}</h3>
+                        <p>{link.reason}</p>
+                      </a>
+                    ))}
+                  </div>
+                )}
 
                 {activeTutorialLinksState?.status === 'error' ? (
                   <p className="status-message muted-message">{activeTutorialLinksState.error}</p>
@@ -658,7 +803,20 @@ function App() {
         </article>
       </section>
 
-      {result ? (
+      {isSubmitting ? (
+        <section className="surface-card ideas-panel">
+          <div className="section-heading">
+            <div className="skeleton-text short skeleton-shimmer" style={{ marginBottom: '8px' }} />
+            <div className="skeleton-title skeleton-shimmer" />
+          </div>
+          <div className="ideas-grid">
+            <div className="skeleton-card skeleton-shimmer" />
+            <div className="skeleton-card skeleton-shimmer" />
+            <div className="skeleton-card skeleton-shimmer" />
+            <div className="skeleton-card skeleton-shimmer" />
+          </div>
+        </section>
+      ) : result ? (
         <section className="surface-card ideas-panel">
           <div className="section-heading">
             <p className="section-kicker">Alternatives</p>
@@ -666,7 +824,7 @@ function App() {
           </div>
 
           <div className="ideas-grid">
-            {result.ideas.map((idea) => {
+            {result.ideas.map((idea, i) => {
               const isActive = activeIdea?.id === idea.id
 
               return (
@@ -674,6 +832,7 @@ function App() {
                   key={idea.id}
                   type="button"
                   className={`idea-option ${isActive ? 'idea-option--active' : ''}`}
+                  style={{ animationDelay: `${i * 60}ms` }}
                   onClick={() => selectIdea(idea)}
                 >
                   <div className="idea-option-topline">
@@ -698,11 +857,12 @@ function App() {
 
         {history.length ? (
           <div className="history-grid">
-            {history.map((entry) => (
+            {history.map((entry, i) => (
               <button
                 key={entry.scan_id}
                 type="button"
                 className="history-card"
+                style={{ animationDelay: `${i * 50}ms` }}
                 onClick={() => loadHistoryEntry(entry)}
               >
                 <div className="history-topline">
