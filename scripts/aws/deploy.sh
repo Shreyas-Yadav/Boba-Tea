@@ -14,16 +14,44 @@ EC2_SECURITY_GROUP_NAME="${EC2_SECURITY_GROUP_NAME:-RecraftWebDemoSg}"
 EC2_INSTANCE_NAME="${EC2_INSTANCE_NAME:-recraft-web-demo}"
 EC2_EIP_NAME="${EC2_EIP_NAME:-recraft-web-demo-eip}"
 SSM_PREFIX="${SSM_PREFIX:-/recraft/prod}"
-INSTANCE_TYPE="${INSTANCE_TYPE:-t3.micro}"
-AMI_SSM_PARAMETER="${AMI_SSM_PARAMETER:-/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64}"
 IMAGE_TAG="${IMAGE_TAG:-$(git rev-parse --short HEAD)}"
 
 ECR_REGISTRY="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
 ECR_REPOSITORY_URI="${ECR_REGISTRY}/${ECR_REPOSITORY}"
 IMAGE_URI="${ECR_REPOSITORY_URI}:${IMAGE_TAG}"
 
+host_arch="$(uname -m)"
+case "${host_arch}" in
+  arm64|aarch64)
+    default_instance_type="t4g.small"
+    default_ami_ssm_parameter="/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64"
+    ;;
+  x86_64|amd64)
+    default_instance_type="t3.small"
+    default_ami_ssm_parameter="/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64"
+    ;;
+  *)
+    echo "Unsupported host architecture: ${host_arch}" >&2
+    exit 1
+    ;;
+esac
+
+INSTANCE_TYPE="${INSTANCE_TYPE:-$default_instance_type}"
+AMI_SSM_PARAMETER="${AMI_SSM_PARAMETER:-$default_ami_ssm_parameter}"
+
 temp_dir="$(mktemp -d)"
-trap 'rm -rf "${temp_dir}"' EXIT
+new_instance_id=""
+deployment_succeeded="false"
+
+cleanup_on_exit() {
+  if [[ "${deployment_succeeded}" != "true" && -n "${new_instance_id}" ]]; then
+    aws ec2 terminate-instances --region "${AWS_REGION}" --instance-ids "${new_instance_id}" >/dev/null 2>&1 || true
+  fi
+
+  rm -rf "${temp_dir}"
+}
+
+trap cleanup_on_exit EXIT
 
 user_data_path="${temp_dir}/user-data.sh"
 
@@ -331,6 +359,7 @@ if [[ -n "${existing_instance_ids}" && "${existing_instance_ids}" != "None" ]]; 
 fi
 
 cleanup_old_images
+deployment_succeeded="true"
 
 echo "Deployment complete."
 echo "EC2 instance: ${new_instance_id}"

@@ -129,6 +129,7 @@ jq -n \
       Effect: "Allow",
       Action: [
         "ecr:BatchCheckLayerAvailability",
+        "ecr:BatchDeleteImage",
         "ecr:CompleteLayerUpload",
         "ecr:CreateRepository",
         "ecr:DescribeImages",
@@ -151,6 +152,7 @@ jq -n \
         "ec2:CreateTags",
         "ec2:DescribeAddresses",
         "ec2:DescribeInstances",
+        "ec2:DescribeInstanceStatus",
         "ec2:DescribeSecurityGroups",
         "ec2:DescribeSubnets",
         "ec2:DescribeVpcs",
@@ -181,7 +183,7 @@ jq -n \
       Action: [
         "ssm:GetParameter"
       ],
-      Resource: ("arn:aws:ssm:" + $aws_region + ":" + $aws_account_id + ":parameter/aws/service/ami-amazon-linux-latest/*")
+      Resource: ("arn:aws:ssm:" + $aws_region + "::parameter/aws/service/ami-amazon-linux-latest/*")
     }
   ]
 }' > "${github_permissions_policy}"
