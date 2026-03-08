@@ -1,14 +1,17 @@
-API_DIR=/Users/manmohan/Documents/FinalSemester/dons_hack/api
-WEB_DIR=/Users/manmohan/Documents/FinalSemester/dons_hack/web
+ROOT_DIR := $(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
+API_DIR := $(ROOT_DIR)/api
+WEB_DIR := $(ROOT_DIR)/web
+VENV := $(API_DIR)/.venv
+VENV_ACTIVATE := $(VENV)/bin/activate
 
 .PHONY: install api web verify
 
 install:
-	cd $(API_DIR) && uv sync
+	cd $(API_DIR) && source $(VENV_ACTIVATE) && uv sync
 	cd $(WEB_DIR) && npm install
 
 api:
-	cd $(API_DIR) && uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+	cd $(API_DIR) && source $(VENV_ACTIVATE) && uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 
 web:
 	cd $(WEB_DIR) && npm run dev -- --host 0.0.0.0 --port 5173
