@@ -1,0 +1,57 @@
+name: Deploy AWS
+
+on:
+  workflow_dispatch:
+  workflow_run:
+    workflows:
+      - CI
+    branches:
+      - main
+    types:
+      - completed
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: deploy-aws-production
+  cancel-in-progress: true
+
+env:
+  AWS_REGION: us-west-2
+  AWS_ACCOUNT_ID: "883107058766"
+  APP_NAME: recraft-web-demo
+  ECR_REPOSITORY: recraft-web-demo
+  EC2_INSTANCE_ROLE_NAME: RecraftEc2InstanceRole
+  EC2_INSTANCE_PROFILE_NAME: RecraftEc2InstanceProfile
+  EC2_SECURITY_GROUP_NAME: RecraftWebDemoSg
+  EC2_INSTANCE_NAME: recraft-web-demo
+  EC2_EIP_NAME: recraft-web-demo-eip
+  INSTANCE_TYPE: t4g.small
+  SSM_PREFIX: /recraft/prod
+  AWS_GITHUB_DEPLOY_ROLE_ARN: arn:aws:iam::883107058766:role/GitHubActionsRecraftDeployRole
+
+jobs:
+  deploy:
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      (
+        github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.event == 'push' &&
+        github.event.workflow_run.head_branch == 'main'
+      )
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.ref }}
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_GITHUB_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - run: chmod +x scripts/aws/deploy.sh
+
+      - run: scripts/aws/deploy.sh

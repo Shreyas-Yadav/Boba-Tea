@@ -2,13 +2,17 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from pathlib import Path
+from time import perf_counter
+from uuid import uuid4
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 
-from .schemas import ScanResponse, VisualizationResponse
+from .schemas import ScanResponse, TutorialLinksRequest, TutorialLinksResponse, VisualizationResponse
 from .settings import get_settings
-from .services import build_scan_response, build_visualization_response
+from .services import build_scan_response, build_tutorial_links_response, build_visualization_response
 
 app = FastAPI(title="ReCraft Demo API", version="0.1.0")
 settings = get_settings()
@@ -22,6 +26,65 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+_API_PATH_PREFIXES = {
+    "health",
+    "scan",
+    "visualize",
+    "links",
+    "docs",
+    "redoc",
+    "openapi.json",
+}
+
+
+def _resolve_frontend_dist_dir() -> Path | None:
+    repo_root = Path(__file__).resolve().parents[2]
+    candidates = (
+        repo_root / "web_dist",
+        repo_root / "web" / "dist",
+    )
+
+    for candidate in candidates:
+        if (candidate / "index.html").exists():
+            return candidate
+
+    return None
+
+
+FRONTEND_DIST_DIR = _resolve_frontend_dist_dir()
+
+
+@app.middleware("http")
+async def log_request_timing(request: Request, call_next):
+    request_id = request.headers.get("cf-ray") or uuid4().hex[:12]
+    started_at = perf_counter()
+    logger.info("request started: request_id=%s method=%s path=%s", request_id, request.method, request.url.path)
+
+    try:
+        response = await call_next(request)
+    except Exception:
+        logger.exception(
+            "request failed: request_id=%s method=%s path=%s elapsed_ms=%s",
+            request_id,
+            request.method,
+            request.url.path,
+            round((perf_counter() - started_at) * 1000),
+        )
+        raise
+
+    elapsed_ms = round((perf_counter() - started_at) * 1000)
+    response.headers["X-Request-Id"] = request_id
+    response.headers["X-Process-Time-Ms"] = str(elapsed_ms)
+    logger.info(
+        "request completed: request_id=%s method=%s path=%s status=%s elapsed_ms=%s",
+        request_id,
+        request.method,
+        request.url.path,
+        response.status_code,
+        elapsed_ms,
+    )
+    return response
 
 
 @app.get("/health")
@@ -122,3 +185,55 @@ async def visualize(
             status_code=502,
             detail=f"Concept image generation failed: {exc}",
         ) from exc
+
+
+@app.post("/links", response_model=TutorialLinksResponse)
+async def tutorial_links(request: TutorialLinksRequest):
+    logger.info(
+        "links request received: idea_id=%s idea_title=%s object=%s",
+        request.idea_id,
+        request.idea_title,
+        request.detected_label,
+    )
+
+    response = await asyncio.to_thread(
+        build_tutorial_links_response,
+        detected_label=request.detected_label,
+        idea_id=request.idea_id,
+        idea_title=request.idea_title,
+        idea_description=request.idea_description,
+        search_query=request.search_query,
+        settings=settings,
+    )
+    logger.info(
+        "links request completed: idea_id=%s mode=%s links=%s",
+        response.idea_id,
+        response.links_mode,
+        len(response.tutorial_links),
+    )
+    return response
+
+
+def _serve_frontend_path(path: str) -> FileResponse:
+    if FRONTEND_DIST_DIR is None:
+        raise HTTPException(status_code=404, detail="Frontend bundle is not available.")
+
+    dist_root = FRONTEND_DIST_DIR.resolve()
+    requested = (dist_root / path).resolve() if path else dist_root / "index.html"
+    if requested.is_relative_to(dist_root) and requested.is_file():
+        return FileResponse(requested)
+
+    return FileResponse(dist_root / "index.html")
+
+
+@app.get("/", include_in_schema=False)
+async def frontend_root():
+    return _serve_frontend_path("")
+
+
+@app.get("/{full_path:path}", include_in_schema=False)
+async def frontend_catch_all(full_path: str):
+    if full_path.split("/", 1)[0] in _API_PATH_PREFIXES:
+        raise HTTPException(status_code=404, detail="Not found.")
+
+    return _serve_frontend_path(full_path)
