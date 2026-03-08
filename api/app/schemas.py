@@ -36,6 +36,7 @@ class ScanResponse(BaseModel):
     source_mode: Literal["gemini", "mock"]
     provider_state: Literal["ok", "not_configured", "fallback_invalid_key", "fallback_error"] = "ok"
     provider_notice: str | None = None
+    image_asset_key: str | None = None
     created_at: datetime
     ideas: list[Idea]
     timings_ms: dict[str, int] = Field(default_factory=dict)
@@ -130,3 +131,16 @@ class VisualizationResponse(BaseModel):
     image_base64: str
     caption: str
     timings_ms: dict[str, int] = Field(default_factory=dict)
+
+
+class VisualizationJobResponse(BaseModel):
+    job_id: str
+    idea_id: str
+    status: Literal["queued", "processing", "completed", "failed"]
+    source_mode: Literal["async", "inline"]
+    created_at: datetime
+    updated_at: datetime
+    result: VisualizationResponse | None = None
+    error: str | None = None
+    timings_ms: dict[str, int] = Field(default_factory=dict)
+    poll_after_ms: int | None = None

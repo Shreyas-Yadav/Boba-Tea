@@ -14,6 +14,8 @@ GITHUB_DEPLOY_ROLE_NAME="${GITHUB_DEPLOY_ROLE_NAME:-GitHubActionsRecraftDeployRo
 REPO_SLUG="${REPO_SLUG:-Shreyas-Yadav/Boba-Tea}"
 GITHUB_BRANCH="${GITHUB_BRANCH:-main}"
 SSM_PREFIX="${SSM_PREFIX:-/recraft/prod}"
+VISUALIZATION_JOBS_BUCKET="${VISUALIZATION_JOBS_BUCKET:-${APP_NAME}-${AWS_ACCOUNT_ID}-${AWS_REGION}-vizjobs}"
+VISUALIZATION_JOBS_QUEUE_NAME="${VISUALIZATION_JOBS_QUEUE_NAME:-${APP_NAME}-visualization-jobs}"
 
 GEMINI_API_KEY="${GEMINI_API_KEY:-}"
 ANALYSIS_MODEL="${ANALYSIS_MODEL:-gemini-3-flash-preview}"
@@ -48,7 +50,9 @@ jq -n '{
 jq -n \
   --arg aws_region "${AWS_REGION}" \
   --arg aws_account_id "${AWS_ACCOUNT_ID}" \
-  --arg ssm_prefix "${SSM_PREFIX}" '
+  --arg ssm_prefix "${SSM_PREFIX}" \
+  --arg visualization_bucket "${VISUALIZATION_JOBS_BUCKET}" \
+  --arg visualization_queue_name "${VISUALIZATION_JOBS_QUEUE_NAME}" '
 {
   Version: "2012-10-17",
   Statement: [
@@ -73,6 +77,33 @@ jq -n \
         "kms:Decrypt"
       ],
       Resource: "*"
+    },
+    {
+      Effect: "Allow",
+      Action: [
+        "s3:GetObject",
+        "s3:PutObject",
+        "s3:DeleteObject"
+      ],
+      Resource: ("arn:aws:s3:::" + $visualization_bucket + "/*")
+    },
+    {
+      Effect: "Allow",
+      Action: [
+        "s3:ListBucket"
+      ],
+      Resource: ("arn:aws:s3:::" + $visualization_bucket)
+    },
+    {
+      Effect: "Allow",
+      Action: [
+        "sqs:ChangeMessageVisibility",
+        "sqs:DeleteMessage",
+        "sqs:GetQueueAttributes",
+        "sqs:ReceiveMessage",
+        "sqs:SendMessage"
+      ],
+      Resource: ("arn:aws:sqs:" + $aws_region + ":" + $aws_account_id + ":" + $visualization_queue_name)
     }
   ]
 }' > "${ec2_ssm_policy}"
@@ -114,7 +145,9 @@ jq -n \
   --arg aws_account_id "${AWS_ACCOUNT_ID}" \
   --arg ecr_repository "${ECR_REPOSITORY}" \
   --arg ec2_instance_role_name "${EC2_INSTANCE_ROLE_NAME}" \
-  --arg ec2_instance_profile_name "${EC2_INSTANCE_PROFILE_NAME}" '
+  --arg ec2_instance_profile_name "${EC2_INSTANCE_PROFILE_NAME}" \
+  --arg visualization_bucket "${VISUALIZATION_JOBS_BUCKET}" \
+  --arg visualization_queue_name "${VISUALIZATION_JOBS_QUEUE_NAME}" '
 {
   Version: "2012-10-17",
   Statement: [
@@ -184,6 +217,27 @@ jq -n \
         "ssm:GetParameter"
       ],
       Resource: ("arn:aws:ssm:" + $aws_region + "::parameter/aws/service/ami-amazon-linux-latest/*")
+    },
+    {
+      Effect: "Allow",
+      Action: [
+        "s3:CreateBucket",
+        "s3:GetBucketLocation",
+        "s3:HeadBucket",
+        "s3:PutBucketTagging"
+      ],
+      Resource: ("arn:aws:s3:::" + $visualization_bucket)
+    },
+    {
+      Effect: "Allow",
+      Action: [
+        "sqs:CreateQueue",
+        "sqs:GetQueueAttributes",
+        "sqs:GetQueueUrl",
+        "sqs:SetQueueAttributes",
+        "sqs:TagQueue"
+      ],
+      Resource: ("arn:aws:sqs:" + $aws_region + ":" + $aws_account_id + ":" + $visualization_queue_name)
     }
   ]
 }' > "${github_permissions_policy}"

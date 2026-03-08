@@ -4,7 +4,7 @@ WEB_DIR := $(ROOT_DIR)/web
 VENV := $(API_DIR)/.venv
 VENV_ACTIVATE := $(VENV)/bin/activate
 
-.PHONY: init install api web verify
+.PHONY: init install api worker web verify
 
 init:
 	@if [ ! -f $(API_DIR)/pyproject.toml ]; then \
@@ -22,6 +22,9 @@ install: init
 
 api:
 	cd $(API_DIR) && source $(VENV_ACTIVATE) && uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+
+worker:
+	cd $(API_DIR) && source $(VENV_ACTIVATE) && uv run python -m app.worker
 
 web:
 	cd $(WEB_DIR) && npm run dev -- --host 0.0.0.0 --port 5173

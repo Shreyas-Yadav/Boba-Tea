@@ -1,11 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ChangeEvent } from 'react'
 import {
+  createVisualizationJob,
   fetchTutorialLinks,
-  generateVisualization,
   getHealth,
+  getVisualizationJob,
   submitScan,
   type Idea,
+  type VisualizationJobResponse,
+  type VisualizationJobStatus,
   type ScanResponse,
   type TutorialLink,
   type TutorialLinksResponse,
@@ -17,8 +20,12 @@ const HISTORY_KEY = 'recraft-scan-history-v2'
 
 type VisualizationState = {
   status: 'idle' | 'loading' | 'ready' | 'error'
+  jobId?: string
+  jobStatus?: VisualizationJobStatus
+  sourceMode?: 'async' | 'inline'
   response?: VisualizationResponse
   error?: string
+  timingsMs?: Record<string, number>
 }
 
 type DebugEvent = {
@@ -158,6 +165,38 @@ function formatTimings(timings?: Record<string, number>) {
   return entries.map(([key, value]) => `${key}=${value}ms`).join(', ')
 }
 
+function mergeVisualizationJobIntoState(job: VisualizationJobResponse): VisualizationState {
+  if (job.status === 'completed' && job.result) {
+    return {
+      status: 'ready',
+      jobId: job.job_id,
+      jobStatus: job.status,
+      sourceMode: job.source_mode,
+      response: job.result,
+      timingsMs: job.timings_ms,
+    }
+  }
+
+  if (job.status === 'failed') {
+    return {
+      status: 'error',
+      jobId: job.job_id,
+      jobStatus: job.status,
+      sourceMode: job.source_mode,
+      error: job.error ?? 'Concept preview could not be generated.',
+      timingsMs: job.timings_ms,
+    }
+  }
+
+  return {
+    status: 'loading',
+    jobId: job.job_id,
+    jobStatus: job.status,
+    sourceMode: job.source_mode,
+    timingsMs: job.timings_ms,
+  }
+}
+
 function App() {
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
   const [result, setResult] = useState<ScanResponse | null>(null)
@@ -171,6 +210,7 @@ function App() {
   const [processingSteps, setProcessingSteps] = useState<ProcessingStep[] | null>(null)
   const cameraInputRef = useRef<HTMLInputElement | null>(null)
   const galleryInputRef = useRef<HTMLInputElement | null>(null)
+  const visualizationPollTimers = useRef<Record<string, number>>({})
 
   /** Helper to update a single step's status. */
   const updateStep = useCallback((id: string, status: StepStatus) => {
@@ -190,6 +230,21 @@ function App() {
     }
     console.log(`[ReCraft ${timestamp}] ${message}`)
     setDebugEvents((previous) => [entry, ...previous].slice(0, 16))
+  }, [])
+
+  const clearVisualizationPoll = useCallback((ideaId: string) => {
+    const timerId = visualizationPollTimers.current[ideaId]
+    if (timerId) {
+      window.clearTimeout(timerId)
+      delete visualizationPollTimers.current[ideaId]
+    }
+  }, [])
+
+  const clearAllVisualizationPolls = useCallback(() => {
+    for (const timerId of Object.values(visualizationPollTimers.current)) {
+      window.clearTimeout(timerId)
+    }
+    visualizationPollTimers.current = {}
   }, [])
 
   const previewUrl = useMemo(() => {
@@ -233,13 +288,17 @@ function App() {
     }
   }, [previewUrl])
 
+  useEffect(() => () => {
+    clearAllVisualizationPolls()
+  }, [clearAllVisualizationPolls])
+
   useEffect(() => {
     async function checkHealth() {
       try {
         appendDebug('Health check started')
         const nextHealth = await getHealth()
         appendDebug(
-          `Health check passed: gemini=${nextHealth.gemini_configured}, analysis=${nextHealth.analysis_model}, image=${nextHealth.image_model}`,
+          `Health check passed: gemini=${nextHealth.gemini_configured}, visualize=${nextHealth.visualization_mode}, analysis=${nextHealth.analysis_model}, image=${nextHealth.image_model}`,
         )
       } catch (healthCheckError) {
         appendDebug(
@@ -263,6 +322,7 @@ function App() {
 
   function handleFileChange(event: ChangeEvent<HTMLInputElement>) {
     const nextFile = event.target.files?.[0] ?? null
+    clearAllVisualizationPolls()
     setSelectedFile(nextFile)
     setResult(null)
     setError(null)
@@ -277,14 +337,64 @@ function App() {
     )
   }
 
-  const requestVisualization = useCallback(async (idea: Idea, scanResult: ScanResponse, imageFile: File) => {
+  const pollVisualizationJob = useCallback(async (idea: Idea, jobId: string) => {
+    try {
+      const response = await getVisualizationJob(jobId)
+      const previousStatus = visualizations[idea.id]?.jobStatus
+      setVisualizations((previous) => ({
+        ...previous,
+        [idea.id]: mergeVisualizationJobIntoState(response),
+      }))
+
+      if (response.status === 'completed' && response.result) {
+        appendDebug(`Visualization job completed for ${idea.id} (${idea.title})`)
+        appendDebug(`Visualization timings: ${formatTimings(response.result.timings_ms)}`)
+        updateStep('preview', 'done')
+        clearVisualizationPoll(idea.id)
+        return
+      }
+
+      if (response.status === 'failed') {
+        appendDebug(`Visualization job failed for ${idea.id}: ${response.error ?? 'unknown error'}`)
+        updateStep('preview', 'error')
+        clearVisualizationPoll(idea.id)
+        return
+      }
+
+      if (previousStatus && previousStatus !== response.status) {
+        appendDebug(`Visualization job status changed for ${idea.id}: ${response.status}`)
+      }
+      visualizationPollTimers.current[idea.id] = window.setTimeout(
+        () => void pollVisualizationJob(idea, jobId),
+        response.poll_after_ms ?? 1500,
+      )
+    } catch (visualizationError) {
+      const errorMessage =
+        visualizationError instanceof Error
+          ? visualizationError.message
+          : 'Concept preview could not be generated.'
+      appendDebug(`Visualization job polling failed for ${idea.id}: ${errorMessage}`)
+      setVisualizations((previous) => ({
+        ...previous,
+        [idea.id]: {
+          status: 'error',
+          jobId,
+          jobStatus: 'failed',
+          error: errorMessage,
+        },
+      }))
+      updateStep('preview', 'error')
+      clearVisualizationPoll(idea.id)
+    }
+  }, [appendDebug, clearVisualizationPoll, updateStep, visualizations])
+
+  const requestVisualization = useCallback(async (idea: Idea, scanResult: ScanResponse, imageFile?: File | null) => {
     appendDebug(
       `Visualization request started for ${idea.id} (${idea.title}) using ${scanResult.detected_label}`,
     )
 
-    // Mark 'preview' step active
     updateStep('preview', 'active')
-
+    clearVisualizationPoll(idea.id)
     setVisualizations((previous) => ({
       ...previous,
       [idea.id]: { status: 'loading' },
@@ -292,24 +402,41 @@ function App() {
 
     try {
       const startedAt = performance.now()
-      const response = await generateVisualization({
-        imageFile,
+      const response = await createVisualizationJob({
+        imageFile: imageFile ?? undefined,
+        imageAssetKey: scanResult.image_asset_key ?? undefined,
         detectedLabel: scanResult.detected_label,
         idea,
       })
       const elapsedMs = Math.round(performance.now() - startedAt)
       appendDebug(
-        `Visualization request succeeded for ${idea.id} in ${elapsedMs} ms with model ${response.model}`,
+        `Visualization job created for ${idea.id} in ${elapsedMs} ms: job=${response.job_id}, status=${response.status}, mode=${response.source_mode}`,
       )
-      appendDebug(`Visualization timings: ${formatTimings(response.timings_ms)}`)
+      appendDebug(`Visualization job timings: ${formatTimings(response.timings_ms)}`)
 
+      const nextState = mergeVisualizationJobIntoState(response)
       setVisualizations((previous) => ({
         ...previous,
-        [idea.id]: { status: 'ready', response },
+        [idea.id]: nextState,
       }))
 
-      // Preview done
-      updateStep('preview', 'done')
+      if (response.status === 'completed' && response.result) {
+        appendDebug(`Visualization completed inline for ${idea.id} with model ${response.result.model}`)
+        appendDebug(`Visualization timings: ${formatTimings(response.result.timings_ms)}`)
+        updateStep('preview', 'done')
+        return
+      }
+
+      if (response.status === 'failed') {
+        appendDebug(`Visualization request failed for ${idea.id}: ${response.error ?? 'unknown error'}`)
+        updateStep('preview', 'error')
+        return
+      }
+
+      visualizationPollTimers.current[idea.id] = window.setTimeout(
+        () => void pollVisualizationJob(idea, response.job_id),
+        response.poll_after_ms ?? 1500,
+      )
     } catch (visualizationError) {
       const errorMessage =
         visualizationError instanceof Error
@@ -323,11 +450,9 @@ function App() {
           error: errorMessage,
         },
       }))
-
-      // Preview errored (don't block rest of flow)
       updateStep('preview', 'error')
     }
-  }, [appendDebug, updateStep])
+  }, [appendDebug, clearVisualizationPoll, pollVisualizationJob, updateStep])
 
   const requestTutorialLinks = useCallback(async (idea: Idea, scanResult: ScanResponse) => {
     appendDebug(`Tutorial links request started for ${idea.id} (${idea.title})`)
@@ -396,7 +521,7 @@ function App() {
   }, [appendDebug, updateStep])
 
   useEffect(() => {
-    if (!result || !activeIdea || !selectedFile) {
+    if (!result || !activeIdea || (!selectedFile && !result.image_asset_key)) {
       return
     }
 
@@ -491,6 +616,7 @@ function App() {
   }
 
   function resetFlow() {
+    clearAllVisualizationPolls()
     setSelectedFile(null)
     setResult(null)
     setError(null)
@@ -502,6 +628,7 @@ function App() {
   }
 
   function loadHistoryEntry(entry: ScanResponse) {
+    clearAllVisualizationPolls()
     setSelectedFile(null)
     setResult(entry)
     setError(null)
@@ -677,7 +804,7 @@ function App() {
                 <div className="concept-panel">
                   <div className="concept-header">
                     <p className="concept-kicker">Reimagined</p>
-                    {selectedFile ? (
+                    {selectedFile || result?.image_asset_key ? (
                       <button
                         type="button"
                         className="inline-action"
@@ -700,7 +827,14 @@ function App() {
                   {activeVisualization?.status === 'loading' ? (
                     <div className="concept-loading">
                       <div className="concept-shimmer" />
-                      <p>Rendering a realistic concept preview…</p>
+                      <p>
+                        {activeVisualization.jobStatus === 'queued'
+                          ? 'Preview request queued. Waiting for a worker slot…'
+                          : 'Rendering a realistic concept preview…'}
+                      </p>
+                      {activeVisualization.jobId ? (
+                        <span>Job {activeVisualization.jobId}</span>
+                      ) : null}
                     </div>
                   ) : null}
 
@@ -895,11 +1029,15 @@ function App() {
               <li>sourceMode: {result?.source_mode ?? 'n/a'}</li>
               <li>providerState: {result?.provider_state ?? 'n/a'}</li>
               <li>providerNotice: {result?.provider_notice ?? 'none'}</li>
+              <li>imageAssetKey: {result?.image_asset_key ?? 'none'}</li>
               <li>activeIdea: {activeIdea?.title ?? 'none'}</li>
               <li>visualization: {activeVisualization?.status ?? 'idle'}</li>
+              <li>visualizationJobId: {activeVisualization?.jobId ?? 'none'}</li>
+              <li>visualizationJobStatus: {activeVisualization?.jobStatus ?? 'none'}</li>
               <li>tutorialLinks: {activeTutorialLinksState?.status ?? 'idle'}</li>
               <li>scanTimings: {formatTimings(result?.timings_ms)}</li>
               <li>tutorialLinkTimings: {formatTimings(activeTutorialLinksState?.response?.timings_ms)}</li>
+              <li>visualizationJobTimings: {formatTimings(activeVisualization?.timingsMs)}</li>
               <li>visualizationTimings: {formatTimings(activeVisualization?.response?.timings_ms)}</li>
             </ul>
           </div>

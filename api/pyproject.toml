@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Local FastAPI backend for the ReCraft demo"
 requires-python = ">=3.12"
 dependencies = [
+  "boto3>=1.40.0",
   "fastapi>=0.116.1",
   "google-genai>=1.46.0",
   "python-multipart>=0.0.20",

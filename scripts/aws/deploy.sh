@@ -14,6 +14,12 @@ EC2_SECURITY_GROUP_NAME="${EC2_SECURITY_GROUP_NAME:-RecraftWebDemoSg}"
 EC2_INSTANCE_NAME="${EC2_INSTANCE_NAME:-recraft-web-demo}"
 EC2_EIP_NAME="${EC2_EIP_NAME:-recraft-web-demo-eip}"
 SSM_PREFIX="${SSM_PREFIX:-/recraft/prod}"
+VISUALIZATION_JOBS_BUCKET="${VISUALIZATION_JOBS_BUCKET:-${APP_NAME}-${AWS_ACCOUNT_ID}-${AWS_REGION}-vizjobs}"
+VISUALIZATION_JOBS_QUEUE_NAME="${VISUALIZATION_JOBS_QUEUE_NAME:-${APP_NAME}-visualization-jobs}"
+VISUALIZATION_JOBS_PREFIX="${VISUALIZATION_JOBS_PREFIX:-visualization-jobs}"
+VISUALIZATION_JOB_POLL_MS="${VISUALIZATION_JOB_POLL_MS:-1500}"
+VISUALIZATION_WORKER_CONCURRENCY="${VISUALIZATION_WORKER_CONCURRENCY:-2}"
+VISUALIZATION_WORKER_WAIT_SECONDS="${VISUALIZATION_WORKER_WAIT_SECONDS:-20}"
 IMAGE_TAG="${IMAGE_TAG:-$(git rev-parse --short HEAD)}"
 
 ECR_REGISTRY="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
@@ -73,7 +79,9 @@ ensure_instance_role() {
   jq -n \
     --arg aws_region "${AWS_REGION}" \
     --arg aws_account_id "${AWS_ACCOUNT_ID}" \
-    --arg ssm_prefix "${SSM_PREFIX}" '
+    --arg ssm_prefix "${SSM_PREFIX}" \
+    --arg visualization_bucket "${VISUALIZATION_JOBS_BUCKET}" \
+    --arg visualization_queue_name "${VISUALIZATION_JOBS_QUEUE_NAME}" '
   {
     Version: "2012-10-17",
     Statement: [
@@ -98,6 +106,33 @@ ensure_instance_role() {
           "kms:Decrypt"
         ],
         Resource: "*"
+      },
+      {
+        Effect: "Allow",
+        Action: [
+          "s3:GetObject",
+          "s3:PutObject",
+          "s3:DeleteObject"
+        ],
+        Resource: ("arn:aws:s3:::" + $visualization_bucket + "/*")
+      },
+      {
+        Effect: "Allow",
+        Action: [
+          "s3:ListBucket"
+        ],
+        Resource: ("arn:aws:s3:::" + $visualization_bucket)
+      },
+      {
+        Effect: "Allow",
+        Action: [
+          "sqs:ChangeMessageVisibility",
+          "sqs:DeleteMessage",
+          "sqs:GetQueueAttributes",
+          "sqs:ReceiveMessage",
+          "sqs:SendMessage"
+        ],
+        Resource: ("arn:aws:sqs:" + $aws_region + ":" + $aws_account_id + ":" + $visualization_queue_name)
       }
     ]
   }' > "${ssm_policy_path}"
@@ -198,6 +233,54 @@ ensure_eip() {
   printf '%s' "${allocation_id}"
 }
 
+ensure_visualization_bucket() {
+  if aws s3api head-bucket --bucket "${VISUALIZATION_JOBS_BUCKET}" >/dev/null 2>&1; then
+    printf '%s' "${VISUALIZATION_JOBS_BUCKET}"
+    return 0
+  fi
+
+  if [[ "${AWS_REGION}" == "us-east-1" ]]; then
+    aws s3api create-bucket --bucket "${VISUALIZATION_JOBS_BUCKET}" >/dev/null
+  else
+    aws s3api create-bucket \
+      --bucket "${VISUALIZATION_JOBS_BUCKET}" \
+      --region "${AWS_REGION}" \
+      --create-bucket-configuration "LocationConstraint=${AWS_REGION}" >/dev/null
+  fi
+
+  aws s3api put-bucket-tagging \
+    --bucket "${VISUALIZATION_JOBS_BUCKET}" \
+    --tagging "TagSet=[{Key=Name,Value=${VISUALIZATION_JOBS_BUCKET}},{Key=Service,Value=${APP_NAME}}]" >/dev/null
+
+  printf '%s' "${VISUALIZATION_JOBS_BUCKET}"
+}
+
+ensure_visualization_queue() {
+  local queue_url
+  queue_url="$(aws sqs get-queue-url \
+    --region "${AWS_REGION}" \
+    --queue-name "${VISUALIZATION_JOBS_QUEUE_NAME}" \
+    --query 'QueueUrl' \
+    --output text 2>/dev/null || true)"
+
+  if [[ -z "${queue_url}" || "${queue_url}" == "None" ]]; then
+    queue_url="$(aws sqs create-queue \
+      --region "${AWS_REGION}" \
+      --queue-name "${VISUALIZATION_JOBS_QUEUE_NAME}" \
+      --attributes "VisibilityTimeout=900,ReceiveMessageWaitTimeSeconds=${VISUALIZATION_WORKER_WAIT_SECONDS},MessageRetentionPeriod=1209600" \
+      --tags "Name=${VISUALIZATION_JOBS_QUEUE_NAME},Service=${APP_NAME}" \
+      --query 'QueueUrl' \
+      --output text)"
+  else
+    aws sqs set-queue-attributes \
+      --region "${AWS_REGION}" \
+      --queue-url "${queue_url}" \
+      --attributes "VisibilityTimeout=900,ReceiveMessageWaitTimeSeconds=${VISUALIZATION_WORKER_WAIT_SECONDS}" >/dev/null
+  fi
+
+  printf '%s' "${queue_url}"
+}
+
 build_and_push_image() {
   aws ecr get-login-password --region "${AWS_REGION}" | docker login --username AWS --password-stdin "${ECR_REGISTRY}"
 
@@ -228,16 +311,44 @@ MOCK_FALLBACK_ENABLED=\$(aws ssm get-parameter --region "${AWS_REGION}" --name "
 
 docker pull "${IMAGE_URI}"
 docker rm -f "${APP_NAME}" || true
+docker rm -f "${APP_NAME}-worker" || true
 docker run -d \
   --name "${APP_NAME}" \
   --restart unless-stopped \
   -p 80:8000 \
+  -e AWS_REGION="${AWS_REGION}" \
   -e GEMINI_API_KEY="\${GEMINI_API_KEY}" \
   -e ANALYSIS_MODEL="\${ANALYSIS_MODEL}" \
   -e SEARCH_MODEL="\${SEARCH_MODEL}" \
   -e IMAGE_MODEL="\${IMAGE_MODEL}" \
   -e MOCK_FALLBACK_ENABLED="\${MOCK_FALLBACK_ENABLED}" \
+  -e VISUALIZATION_JOBS_ENABLED="true" \
+  -e VISUALIZATION_JOBS_BUCKET="${VISUALIZATION_JOBS_BUCKET}" \
+  -e VISUALIZATION_JOBS_QUEUE_URL="${visualization_queue_url}" \
+  -e VISUALIZATION_JOBS_PREFIX="${VISUALIZATION_JOBS_PREFIX}" \
+  -e VISUALIZATION_JOB_POLL_MS="${VISUALIZATION_JOB_POLL_MS}" \
+  -e VISUALIZATION_WORKER_CONCURRENCY="${VISUALIZATION_WORKER_CONCURRENCY}" \
+  -e VISUALIZATION_WORKER_WAIT_SECONDS="${VISUALIZATION_WORKER_WAIT_SECONDS}" \
   "${IMAGE_URI}"
+
+docker run -d \
+  --name "${APP_NAME}-worker" \
+  --restart unless-stopped \
+  -e AWS_REGION="${AWS_REGION}" \
+  -e GEMINI_API_KEY="\${GEMINI_API_KEY}" \
+  -e ANALYSIS_MODEL="\${ANALYSIS_MODEL}" \
+  -e SEARCH_MODEL="\${SEARCH_MODEL}" \
+  -e IMAGE_MODEL="\${IMAGE_MODEL}" \
+  -e MOCK_FALLBACK_ENABLED="\${MOCK_FALLBACK_ENABLED}" \
+  -e VISUALIZATION_JOBS_ENABLED="true" \
+  -e VISUALIZATION_JOBS_BUCKET="${VISUALIZATION_JOBS_BUCKET}" \
+  -e VISUALIZATION_JOBS_QUEUE_URL="${visualization_queue_url}" \
+  -e VISUALIZATION_JOBS_PREFIX="${VISUALIZATION_JOBS_PREFIX}" \
+  -e VISUALIZATION_JOB_POLL_MS="${VISUALIZATION_JOB_POLL_MS}" \
+  -e VISUALIZATION_WORKER_CONCURRENCY="${VISUALIZATION_WORKER_CONCURRENCY}" \
+  -e VISUALIZATION_WORKER_WAIT_SECONDS="${VISUALIZATION_WORKER_WAIT_SECONDS}" \
+  "${IMAGE_URI}" \
+  python -m app.worker
 EOF
 }
 
@@ -305,6 +416,8 @@ wait_for_app() {
 }
 
 build_and_push_image
+ensure_visualization_bucket >/dev/null
+visualization_queue_url="$(ensure_visualization_queue)"
 ensure_instance_role
 security_group_id="$(ensure_security_group)"
 allocation_id="$(ensure_eip)"

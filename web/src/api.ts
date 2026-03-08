@@ -35,6 +35,7 @@ export type ScanResponse = {
   source_mode: 'gemini' | 'mock'
   provider_state: 'ok' | 'not_configured' | 'fallback_invalid_key' | 'fallback_error'
   provider_notice: string | null
+  image_asset_key: string | null
   created_at: string
   ideas: Idea[]
   timings_ms: Record<string, number>
@@ -57,6 +58,24 @@ export type HealthResponse = {
   analysis_model: string
   search_model: string
   image_model: string
+  visualization_mode: 'async' | 'inline'
+  visualization_jobs_enabled: 'yes' | 'no'
+  visualization_jobs_configured: 'yes' | 'no'
+}
+
+export type VisualizationJobStatus = 'queued' | 'processing' | 'completed' | 'failed'
+
+export type VisualizationJobResponse = {
+  job_id: string
+  idea_id: string
+  status: VisualizationJobStatus
+  source_mode: 'async' | 'inline'
+  created_at: string
+  updated_at: string
+  result: VisualizationResponse | null
+  error: string | null
+  timings_ms: Record<string, number>
+  poll_after_ms: number | null
 }
 
 const configuredBaseUrl = import.meta.env.VITE_API_BASE_URL?.trim()
@@ -120,6 +139,47 @@ export async function generateVisualization(args: {
   }
 
   return response.json() as Promise<VisualizationResponse>
+}
+
+export async function createVisualizationJob(args: {
+  imageFile?: File
+  imageAssetKey?: string
+  detectedLabel: string
+  idea: Idea
+}): Promise<VisualizationJobResponse> {
+  const formData = new FormData()
+  if (args.imageFile) {
+    formData.append('image', args.imageFile)
+  }
+  if (args.imageAssetKey) {
+    formData.append('image_asset_key', args.imageAssetKey)
+  }
+  formData.append('idea_id', args.idea.id)
+  formData.append('detected_label', args.detectedLabel)
+  formData.append('idea_title', args.idea.title)
+  formData.append('idea_description', args.idea.description)
+  formData.append('visualization_prompt', args.idea.visualization_prompt)
+
+  const response = await fetch(`${API_BASE_URL}/visualize/jobs`, {
+    method: 'POST',
+    body: formData,
+  })
+
+  if (!response.ok) {
+    throw new Error(await readErrorMessage(response))
+  }
+
+  return response.json() as Promise<VisualizationJobResponse>
+}
+
+export async function getVisualizationJob(jobId: string): Promise<VisualizationJobResponse> {
+  const response = await fetch(`${API_BASE_URL}/visualize/jobs/${jobId}`)
+
+  if (!response.ok) {
+    throw new Error(await readErrorMessage(response))
+  }
+
+  return response.json() as Promise<VisualizationJobResponse>
 }
 
 export async function fetchTutorialLinks(args: {

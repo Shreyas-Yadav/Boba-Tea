@@ -10,9 +10,23 @@ from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
-from .schemas import ScanResponse, TutorialLinksRequest, TutorialLinksResponse, VisualizationResponse
+from .schemas import (
+    ScanResponse,
+    TutorialLinksRequest,
+    TutorialLinksResponse,
+    VisualizationJobResponse,
+    VisualizationResponse,
+)
 from .settings import get_settings
 from .services import build_scan_response, build_tutorial_links_response, build_visualization_response
+from .visualization_jobs import (
+    create_visualization_job_response,
+    get_visualization_job_response,
+    store_scan_asset,
+    visualization_jobs_configured,
+    visualization_jobs_ready,
+    visualization_mode,
+)
 
 app = FastAPI(title="ReCraft Demo API", version="0.1.0")
 settings = get_settings()
@@ -97,13 +111,13 @@ def health() -> dict[str, str | int]:
         "analysis_model": settings.analysis_model,
         "search_model": settings.search_model,
         "image_model": settings.image_model,
+        "visualization_mode": visualization_mode(settings),
+        "visualization_jobs_enabled": "yes" if settings.visualization_jobs_enabled else "no",
+        "visualization_jobs_configured": "yes" if visualization_jobs_configured(settings) else "no",
     }
 
 
-@app.post("/scan", response_model=ScanResponse)
-async def scan(image: UploadFile = File(...)):
-    logger.info("scan request received: filename=%s content_type=%s", image.filename, image.content_type)
-
+async def _read_uploaded_image(image: UploadFile) -> bytes:
     if not image.content_type or not image.content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="Please upload an image file.")
 
@@ -113,6 +127,14 @@ async def scan(image: UploadFile = File(...)):
 
     if len(image_bytes) > 10 * 1024 * 1024:
         raise HTTPException(status_code=413, detail="Please upload an image smaller than 10 MB.")
+
+    return image_bytes
+
+
+@app.post("/scan", response_model=ScanResponse)
+async def scan(image: UploadFile = File(...)):
+    logger.info("scan request received: filename=%s content_type=%s", image.filename, image.content_type)
+    image_bytes = await _read_uploaded_image(image)
 
     response = await asyncio.to_thread(
         build_scan_response,
@@ -128,6 +150,22 @@ async def scan(image: UploadFile = File(...)):
         response.source_mode,
         len(response.ideas),
     )
+
+    if visualization_jobs_ready(settings):
+        try:
+            image_asset_key = await asyncio.to_thread(
+                store_scan_asset,
+                image_bytes=image_bytes,
+                mime_type=image.content_type or "application/octet-stream",
+                scan_id=response.scan_id,
+                settings=settings,
+            )
+            response.image_asset_key = image_asset_key
+            if image_asset_key:
+                logger.info("scan asset stored: scan_id=%s key=%s", response.scan_id, image_asset_key)
+        except Exception:
+            logger.exception("scan asset storage failed: scan_id=%s", response.scan_id)
+
     return response
 
 
@@ -147,15 +185,7 @@ async def visualize(
         image.content_type,
     )
 
-    if not image.content_type or not image.content_type.startswith("image/"):
-        raise HTTPException(status_code=400, detail="Please upload an image file.")
-
-    image_bytes = await image.read()
-    if not image_bytes:
-        raise HTTPException(status_code=400, detail="Uploaded image is empty.")
-
-    if len(image_bytes) > 10 * 1024 * 1024:
-        raise HTTPException(status_code=413, detail="Please upload an image smaller than 10 MB.")
+    image_bytes = await _read_uploaded_image(image)
 
     try:
         response = await asyncio.to_thread(
@@ -185,6 +215,85 @@ async def visualize(
             status_code=502,
             detail=f"Concept image generation failed: {exc}",
         ) from exc
+
+
+@app.post("/visualize/jobs", response_model=VisualizationJobResponse)
+async def create_visualization_job(
+    image: UploadFile | None = File(None),
+    image_asset_key: str | None = Form(None),
+    idea_id: str = Form(...),
+    detected_label: str = Form(...),
+    idea_title: str = Form(...),
+    idea_description: str = Form(...),
+    visualization_prompt: str = Form(...),
+):
+    logger.info(
+        "visualize job request received: idea_id=%s idea_title=%s has_asset=%s content_type=%s",
+        idea_id,
+        idea_title,
+        "yes" if image_asset_key else "no",
+        image.content_type if image else None,
+    )
+
+    image_bytes: bytes | None = None
+    mime_type: str | None = None
+    if image is not None:
+        image_bytes = await _read_uploaded_image(image)
+        mime_type = image.content_type
+
+    if image_bytes is None and not image_asset_key:
+        raise HTTPException(status_code=400, detail="Provide either an uploaded image or a stored scan asset.")
+
+    try:
+        response = await asyncio.to_thread(
+            create_visualization_job_response,
+            image_bytes=image_bytes,
+            image_asset_key=image_asset_key,
+            mime_type=mime_type,
+            detected_label=detected_label,
+            idea_id=idea_id,
+            idea_title=idea_title,
+            idea_description=idea_description,
+            visualization_prompt=visualization_prompt,
+            settings=settings,
+        )
+        logger.info(
+            "visualize job request completed: job_id=%s idea_id=%s status=%s mode=%s",
+            response.job_id,
+            response.idea_id,
+            response.status,
+            response.source_mode,
+        )
+        return response
+    except ValueError as exc:
+        logger.warning("visualize job request failed with validation error: %s", exc)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("visualize job request failed")
+        raise HTTPException(status_code=502, detail=f"Visualization job creation failed: {exc}") from exc
+
+
+@app.get("/visualize/jobs/{job_id}", response_model=VisualizationJobResponse)
+async def get_visualization_job(job_id: str):
+    try:
+        response = await asyncio.to_thread(
+            get_visualization_job_response,
+            job_id,
+            settings,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("visualize job lookup failed: job_id=%s", job_id)
+        raise HTTPException(status_code=502, detail=f"Visualization job lookup failed: {exc}") from exc
+
+    logger.info(
+        "visualize job lookup completed: job_id=%s status=%s mode=%s",
+        response.job_id,
+        response.status,
+        response.source_mode,
+    )
+    return response
 
 
 @app.post("/links", response_model=TutorialLinksResponse)
