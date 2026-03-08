@@ -4,9 +4,19 @@ WEB_DIR := $(ROOT_DIR)/web
 VENV := $(API_DIR)/.venv
 VENV_ACTIVATE := $(VENV)/bin/activate
 
-.PHONY: install api web verify
+.PHONY: init install api web verify
 
-install:
+init:
+	@if [ ! -f $(API_DIR)/pyproject.toml ]; then \
+		echo "Initializing uv project in $(API_DIR)..."; \
+		cd $(API_DIR) && uv init --app; \
+	fi
+	@if [ ! -d $(API_DIR)/.venv ]; then \
+		echo "Creating virtual environment in $(API_DIR)..."; \
+		cd $(API_DIR) && uv venv; \
+	fi
+
+install: init
 	cd $(API_DIR) && source $(VENV_ACTIVATE) && uv sync
 	cd $(WEB_DIR) && npm install
 
