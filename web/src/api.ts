@@ -6,6 +6,13 @@ export type TutorialLink = {
   reason: string
 }
 
+export type TutorialLinksResponse = {
+  idea_id: string
+  tutorial_links: TutorialLink[]
+  links_mode: 'grounded' | 'fallback'
+  timings_ms: Record<string, number>
+}
+
 export type Idea = {
   id: string
   title: string
@@ -30,6 +37,7 @@ export type ScanResponse = {
   provider_notice: string | null
   created_at: string
   ideas: Idea[]
+  timings_ms: Record<string, number>
 }
 
 export type VisualizationResponse = {
@@ -38,6 +46,7 @@ export type VisualizationResponse = {
   mime_type: string
   image_base64: string
   caption: string
+  timings_ms: Record<string, number>
 }
 
 export type HealthResponse = {
@@ -111,4 +120,29 @@ export async function generateVisualization(args: {
   }
 
   return response.json() as Promise<VisualizationResponse>
+}
+
+export async function fetchTutorialLinks(args: {
+  detectedLabel: string
+  idea: Idea
+}): Promise<TutorialLinksResponse> {
+  const response = await fetch(`${API_BASE_URL}/links`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      detected_label: args.detectedLabel,
+      idea_id: args.idea.id,
+      idea_title: args.idea.title,
+      idea_description: args.idea.description,
+      search_query: args.idea.search_query,
+    }),
+  })
+
+  if (!response.ok) {
+    throw new Error(await readErrorMessage(response))
+  }
+
+  return response.json() as Promise<TutorialLinksResponse>
 }

@@ -3,14 +3,19 @@ from __future__ import annotations
 import hashlib
 import logging
 from datetime import UTC, datetime
+from time import perf_counter
 from urllib.parse import quote_plus
 
 from .catalog import CATALOG
 from .gemini import generate_grounded_links, generate_scan_payload, generate_visualization
-from .schemas import Idea, ScanResponse, TutorialLink, VisualizationResponse
+from .schemas import Idea, ScanResponse, TutorialLink, TutorialLinksResponse, VisualizationResponse
 from .settings import Settings
 
 logger = logging.getLogger(__name__)
+
+
+def _elapsed_ms(started_at: float) -> int:
+    return max(0, round((perf_counter() - started_at) * 1000))
 
 
 def _is_invalid_key_error(message: str) -> bool:
@@ -48,7 +53,9 @@ def build_mock_scan_response(
     *,
     provider_state: str = "not_configured",
     provider_notice: str | None = None,
+    timings_ms: dict[str, int] | None = None,
 ) -> ScanResponse:
+    started_at = perf_counter()
     payload = image_bytes or (filename or "fallback").encode("utf-8")
     digest = hashlib.sha256(payload).digest()
     object_index = digest[0] % len(CATALOG)
@@ -90,9 +97,54 @@ def build_mock_scan_response(
         provider_notice=provider_notice,
         created_at=datetime.now(UTC),
         ideas=ideas,
+        timings_ms={
+            **(timings_ms or {}),
+            "fallback_build": _elapsed_ms(started_at),
+            "total": (timings_ms or {}).get("total", _elapsed_ms(started_at)),
+        },
     )
     logger.info("mock scan response built: scan_id=%s object=%s", response.scan_id, response.detected_label)
     return response
+
+
+def _generate_tutorial_links(
+    *,
+    detected_label: str,
+    idea_title: str,
+    idea_description: str,
+    search_query: str,
+    settings: Settings,
+) -> tuple[list[TutorialLink], str, int]:
+    started_at = perf_counter()
+
+    if not settings.gemini_api_key:
+        return _fallback_links(search_query, idea_title), "fallback", _elapsed_ms(started_at)
+
+    try:
+        grounded = generate_grounded_links(
+            detected_label=detected_label,
+            idea_title=idea_title,
+            idea_description=idea_description,
+            search_query=search_query,
+            settings=settings,
+        )
+        tutorial_links = [
+            TutorialLink(
+                id=f"link_{link_index + 1}",
+                source=link.source,
+                title=link.title,
+                url=link.url,
+                reason=link.reason,
+            )
+            for link_index, link in enumerate(grounded.links[:3])
+        ]
+        link_mode = "grounded"
+    except Exception as exc:
+        logger.warning("Grounded link generation failed for '%s': %s", idea_title, exc)
+        tutorial_links = _fallback_links(search_query, idea_title)
+        link_mode = "fallback"
+
+    return tutorial_links, link_mode, _elapsed_ms(started_at)
 
 
 def build_scan_response(
@@ -102,27 +154,34 @@ def build_scan_response(
     mime_type: str,
     settings: Settings,
 ) -> ScanResponse:
+    total_started_at = perf_counter()
+
     if not settings.gemini_api_key:
         return build_mock_scan_response(
             image_bytes=image_bytes,
             filename=filename,
             provider_state="not_configured",
             provider_notice="Gemini is not configured, so this scan is using local mock ideas.",
+            timings_ms={"total": _elapsed_ms(total_started_at)},
         )
 
+    analysis_started_at = perf_counter()
     try:
         payload = generate_scan_payload(
             image_bytes=image_bytes,
             mime_type=mime_type,
             settings=settings,
         )
+        analysis_ms = _elapsed_ms(analysis_started_at)
         logger.info(
-            "gemini scan payload generated: object=%s confidence=%.2f ideas=%s",
+            "gemini scan payload generated: object=%s confidence=%.2f ideas=%s analysis_ms=%s",
             payload.detected_label,
             payload.confidence,
             len(payload.ideas),
+            analysis_ms,
         )
     except Exception as exc:
+        analysis_ms = _elapsed_ms(analysis_started_at)
         logger.warning("Gemini scan generation failed, falling back to mock mode: %s", exc)
         if settings.mock_fallback_enabled:
             provider_notice = (
@@ -136,6 +195,10 @@ def build_scan_response(
                 filename=filename,
                 provider_state=provider_state,
                 provider_notice=provider_notice,
+                timings_ms={
+                    "analysis": analysis_ms,
+                    "total": _elapsed_ms(total_started_at),
+                },
             )
         raise
 
@@ -143,28 +206,6 @@ def build_scan_response(
     ideas: list[Idea] = []
 
     for index, idea in enumerate(payload.ideas):
-        try:
-            grounded = generate_grounded_links(
-                detected_label=payload.detected_label,
-                idea_title=idea.title,
-                idea_description=idea.description,
-                search_query=idea.search_query,
-                settings=settings,
-            )
-            tutorial_links = [
-                TutorialLink(
-                    id=f"link_{link_index + 1}",
-                    source=link.source,
-                    title=link.title,
-                    url=link.url,
-                    reason=link.reason,
-                )
-                for link_index, link in enumerate(grounded.links[:3])
-            ]
-        except Exception as exc:
-            logger.warning("Grounded link generation failed for '%s': %s", idea.title, exc)
-            tutorial_links = _fallback_links(idea.search_query, idea.title)
-
         ideas.append(
             Idea(
                 id=f"idea_{index + 1}",
@@ -176,7 +217,7 @@ def build_scan_response(
                 steps=idea.steps,
                 search_query=idea.search_query,
                 visualization_prompt=idea.visualization_prompt,
-                tutorial_links=tutorial_links,
+                tutorial_links=_fallback_links(idea.search_query, idea.title),
             )
         )
 
@@ -191,9 +232,49 @@ def build_scan_response(
         provider_notice=None,
         created_at=datetime.now(UTC),
         ideas=ideas,
+        timings_ms={
+            "analysis": analysis_ms,
+            "total": _elapsed_ms(total_started_at),
+        },
     )
-    logger.info("gemini scan response built: scan_id=%s object=%s", response.scan_id, response.detected_label)
+    logger.info(
+        "gemini scan response built: scan_id=%s object=%s total_ms=%s ideas=%s",
+        response.scan_id,
+        response.detected_label,
+        response.timings_ms["total"],
+        len(response.ideas),
+    )
     return response
+
+
+def build_tutorial_links_response(
+    *,
+    detected_label: str,
+    idea_id: str,
+    idea_title: str,
+    idea_description: str,
+    search_query: str,
+    settings: Settings,
+) -> TutorialLinksResponse:
+    tutorial_links, link_mode, elapsed_ms = _generate_tutorial_links(
+        detected_label=detected_label,
+        idea_title=idea_title,
+        idea_description=idea_description,
+        search_query=search_query,
+        settings=settings,
+    )
+    logger.info(
+        "tutorial links generated: idea_id=%s mode=%s elapsed_ms=%s",
+        idea_id,
+        link_mode,
+        elapsed_ms,
+    )
+    return TutorialLinksResponse(
+        idea_id=idea_id,
+        tutorial_links=tutorial_links,
+        links_mode=link_mode,
+        timings_ms={"total": elapsed_ms},
+    )
 
 
 def build_visualization_response(
@@ -207,6 +288,7 @@ def build_visualization_response(
     visualization_prompt: str,
     settings: Settings,
 ) -> VisualizationResponse:
+    started_at = perf_counter()
     if not settings.gemini_api_key:
         raise ValueError("Gemini API key is missing. Add a valid key to generate concept images.")
 
@@ -221,7 +303,13 @@ def build_visualization_response(
             visualization_prompt=visualization_prompt,
             settings=settings,
         )
-        logger.info("visualization generated: idea_id=%s model=%s", response.idea_id, response.model)
+        response.timings_ms["total"] = _elapsed_ms(started_at)
+        logger.info(
+            "visualization generated: idea_id=%s model=%s total_ms=%s",
+            response.idea_id,
+            response.model,
+            response.timings_ms["total"],
+        )
         return response
     except Exception as exc:
         message = str(exc)

@@ -1,12 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ChangeEvent } from 'react'
 import {
+  fetchTutorialLinks,
   generateVisualization,
   getHealth,
   submitScan,
   type HealthResponse,
   type Idea,
   type ScanResponse,
+  type TutorialLink,
+  type TutorialLinksResponse,
   type VisualizationResponse,
 } from './api'
 import './App.css'
@@ -23,6 +26,12 @@ type DebugEvent = {
   id: string
   message: string
   timestamp: string
+}
+
+type TutorialLinksState = {
+  status: 'idle' | 'loading' | 'ready' | 'error'
+  response?: TutorialLinksResponse
+  error?: string
 }
 
 function loadHistory() {
@@ -42,6 +51,19 @@ function saveHistory(nextHistory: ScanResponse[]) {
   localStorage.setItem(HISTORY_KEY, JSON.stringify(nextHistory))
 }
 
+function formatTimings(timings?: Record<string, number>) {
+  if (!timings) {
+    return 'n/a'
+  }
+
+  const entries = Object.entries(timings).sort(([left], [right]) => left.localeCompare(right))
+  if (!entries.length) {
+    return 'n/a'
+  }
+
+  return entries.map(([key, value]) => `${key}=${value}ms`).join(', ')
+}
+
 function App() {
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
   const [result, setResult] = useState<ScanResponse | null>(null)
@@ -52,6 +74,7 @@ function App() {
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [activeIdeaId, setActiveIdeaId] = useState<string | null>(null)
   const [visualizations, setVisualizations] = useState<Record<string, VisualizationState>>({})
+  const [tutorialLinks, setTutorialLinks] = useState<Record<string, TutorialLinksState>>({})
   const [debugEvents, setDebugEvents] = useState<DebugEvent[]>([])
   const cameraInputRef = useRef<HTMLInputElement | null>(null)
   const galleryInputRef = useRef<HTMLInputElement | null>(null)
@@ -91,6 +114,10 @@ function App() {
   }, [activeIdeaId, result])
 
   const activeVisualization = activeIdea ? visualizations[activeIdea.id] : undefined
+  const activeTutorialLinksState = activeIdea ? tutorialLinks[activeIdea.id] : undefined
+  const activeTutorialLinks: TutorialLink[] = activeIdea
+    ? activeTutorialLinksState?.response?.tutorial_links ?? activeIdea.tutorial_links
+    : []
   const activeVisualizationUrl =
     activeVisualization?.response
       ? `data:${activeVisualization.response.mime_type};base64,${activeVisualization.response.image_base64}`
@@ -145,6 +172,7 @@ function App() {
     setResult(null)
     setError(null)
     setVisualizations({})
+    setTutorialLinks({})
     setActiveIdeaId(null)
     appendDebug(
       nextFile
@@ -163,14 +191,17 @@ function App() {
     }))
 
     try {
+      const startedAt = performance.now()
       const response = await generateVisualization({
         imageFile,
         detectedLabel: scanResult.detected_label,
         idea,
       })
+      const elapsedMs = Math.round(performance.now() - startedAt)
       appendDebug(
-        `Visualization request succeeded for ${idea.id} with model ${response.model}`,
+        `Visualization request succeeded for ${idea.id} in ${elapsedMs} ms with model ${response.model}`,
       )
+      appendDebug(`Visualization timings: ${formatTimings(response.timings_ms)}`)
 
       setVisualizations((previous) => ({
         ...previous,
@@ -183,6 +214,62 @@ function App() {
           : 'Concept preview could not be generated.'
       appendDebug(`Visualization request failed for ${idea.id}: ${errorMessage}`)
       setVisualizations((previous) => ({
+        ...previous,
+        [idea.id]: {
+          status: 'error',
+          error: errorMessage,
+        },
+      }))
+    }
+  }, [appendDebug])
+
+  const requestTutorialLinks = useCallback(async (idea: Idea, scanResult: ScanResponse) => {
+    appendDebug(`Tutorial links request started for ${idea.id} (${idea.title})`)
+    setTutorialLinks((previous) => ({
+      ...previous,
+      [idea.id]: { status: 'loading' },
+    }))
+
+    try {
+      const startedAt = performance.now()
+      const response = await fetchTutorialLinks({
+        detectedLabel: scanResult.detected_label,
+        idea,
+      })
+      const elapsedMs = Math.round(performance.now() - startedAt)
+      appendDebug(
+        `Tutorial links request succeeded for ${idea.id} in ${elapsedMs} ms with mode ${response.links_mode}`,
+      )
+      appendDebug(`Tutorial links timings: ${formatTimings(response.timings_ms)}`)
+
+      setTutorialLinks((previous) => ({
+        ...previous,
+        [idea.id]: { status: 'ready', response },
+      }))
+      setResult((previous) => {
+        if (!previous) {
+          return previous
+        }
+
+        return {
+          ...previous,
+          ideas: previous.ideas.map((candidate) =>
+            candidate.id === idea.id
+              ? {
+                  ...candidate,
+                  tutorial_links: response.tutorial_links,
+                }
+              : candidate,
+          ),
+        }
+      })
+    } catch (tutorialLinksError) {
+      const errorMessage =
+        tutorialLinksError instanceof Error
+          ? tutorialLinksError.message
+          : 'Related tutorial links could not be refreshed.'
+      appendDebug(`Tutorial links request failed for ${idea.id}: ${errorMessage}`)
+      setTutorialLinks((previous) => ({
         ...previous,
         [idea.id]: {
           status: 'error',
@@ -214,6 +301,28 @@ function App() {
     void requestVisualization(activeIdea, result, selectedFile)
   }, [activeIdea, appendDebug, requestVisualization, result, selectedFile, visualizations])
 
+  useEffect(() => {
+    if (!result || !activeIdea) {
+      return
+    }
+
+    if (result.source_mode !== 'gemini') {
+      appendDebug(`Tutorial links auto-refresh skipped because source mode is ${result.source_mode}`)
+      return
+    }
+
+    const existing = tutorialLinks[activeIdea.id]
+    if (existing?.status === 'loading' || existing?.status === 'ready') {
+      appendDebug(
+        `Tutorial links auto-refresh not re-triggered for ${activeIdea.id}; existing status=${existing.status}`,
+      )
+      return
+    }
+
+    appendDebug(`Tutorial links auto-refresh triggered for ${activeIdea.id} (${activeIdea.title})`)
+    void requestTutorialLinks(activeIdea, result)
+  }, [activeIdea, appendDebug, requestTutorialLinks, result, tutorialLinks])
+
   async function handleSubmit() {
     if (!selectedFile) {
       setError('Choose a photo before scanning.')
@@ -225,14 +334,18 @@ function App() {
       setIsSubmitting(true)
       setError(null)
       setVisualizations({})
+      setTutorialLinks({})
       appendDebug(`Scan request started for ${selectedFile.name}`)
 
+      const startedAt = performance.now()
       const nextResult = await submitScan(selectedFile)
+      const elapsedMs = Math.round(performance.now() - startedAt)
       setResult(nextResult)
       setActiveIdeaId(nextResult.ideas[0]?.id ?? null)
       appendDebug(
-        `Scan request succeeded: object=${nextResult.detected_label}, source=${nextResult.source_mode}, provider=${nextResult.provider_state}, ideas=${nextResult.ideas.length}`,
+        `Scan request succeeded in ${elapsedMs} ms: object=${nextResult.detected_label}, source=${nextResult.source_mode}, provider=${nextResult.provider_state}, ideas=${nextResult.ideas.length}`,
       )
+      appendDebug(`Scan timings: ${formatTimings(nextResult.timings_ms)}`)
       if (nextResult.provider_notice) {
         appendDebug(`Provider notice: ${nextResult.provider_notice}`)
       }
@@ -256,6 +369,7 @@ function App() {
     setResult(null)
     setError(null)
     setVisualizations({})
+    setTutorialLinks({})
     setActiveIdeaId(null)
     appendDebug('Flow reset')
   }
@@ -265,6 +379,7 @@ function App() {
     setResult(entry)
     setError(null)
     setVisualizations({})
+    setTutorialLinks({})
     setActiveIdeaId(entry.ideas[0]?.id ?? null)
     appendDebug(`Loaded history entry ${entry.scan_id} (${entry.detected_label})`)
   }
@@ -506,12 +621,16 @@ function App() {
                 <div className="links-heading">
                   <div>
                     <p className="detail-kicker">Related tutorials</p>
-                    <p className="detail-copy">Grounded to this exact idea, not generic recycling links.</p>
+                    <p className="detail-copy">
+                      {activeTutorialLinksState?.status === 'loading'
+                        ? 'Refreshing grounded links for this idea...'
+                        : 'Grounded to this exact idea when available, otherwise quick fallback links.'}
+                    </p>
                   </div>
                 </div>
 
                 <div className="link-list">
-                  {activeIdea.tutorial_links.map((link) => (
+                  {activeTutorialLinks.map((link) => (
                     <a key={link.id} className="link-card" href={link.url} target="_blank" rel="noreferrer">
                       <div className="link-topline">
                         <span className={`source-pill source-pill--${link.source}`}>{link.source}</span>
@@ -522,6 +641,10 @@ function App() {
                     </a>
                   ))}
                 </div>
+
+                {activeTutorialLinksState?.status === 'error' ? (
+                  <p className="status-message muted-message">{activeTutorialLinksState.error}</p>
+                ) : null}
               </section>
 
               <p className="safety-note">Safety note: {result.safety_note}</p>
@@ -623,6 +746,10 @@ function App() {
               <li>providerNotice: {result?.provider_notice ?? 'none'}</li>
               <li>activeIdea: {activeIdea?.title ?? 'none'}</li>
               <li>visualization: {activeVisualization?.status ?? 'idle'}</li>
+              <li>tutorialLinks: {activeTutorialLinksState?.status ?? 'idle'}</li>
+              <li>scanTimings: {formatTimings(result?.timings_ms)}</li>
+              <li>tutorialLinkTimings: {formatTimings(activeTutorialLinksState?.response?.timings_ms)}</li>
+              <li>visualizationTimings: {formatTimings(activeVisualization?.response?.timings_ms)}</li>
             </ul>
           </div>
 

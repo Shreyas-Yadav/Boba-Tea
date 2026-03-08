@@ -100,3 +100,48 @@ For direct camera stream APIs, mobile browsers generally prefer HTTPS. The curre
 - user accounts and synced history
 - Capacitor packaging for Android and iOS
 - automated tests beyond manual smoke checks
+
+## AWS deployment
+
+This repo now supports a single-container AWS deployment on EC2:
+
+- one Docker image builds the Vite frontend and serves it from the FastAPI app
+- backend secrets and model config are loaded from AWS SSM Parameter Store
+- one public EC2 instance serves both the web app and the API
+- an Elastic IP keeps the demo URL stable across redeploys
+
+Expected AWS defaults:
+
+- region: `us-west-2`
+- account: `883107058766`
+- ECR repo: `recraft-web-demo`
+- EC2 instance: `recraft-web-demo`
+- EC2 instance role: `RecraftEc2InstanceRole`
+- EC2 instance profile: `RecraftEc2InstanceProfile`
+- SSM prefix: `/recraft/prod`
+
+SSM parameters:
+
+- `/recraft/prod/GEMINI_API_KEY` (`SecureString`)
+- `/recraft/prod/ANALYSIS_MODEL`
+- `/recraft/prod/SEARCH_MODEL`
+- `/recraft/prod/IMAGE_MODEL`
+- `/recraft/prod/MOCK_FALLBACK_ENABLED`
+
+Bootstrap AWS resources and parameters:
+
+```bash
+cd /Users/manmohan/Documents/Karathpy/Boba-Tea
+chmod +x scripts/aws/bootstrap.sh scripts/aws/deploy.sh
+export GEMINI_API_KEY=your_real_key
+scripts/aws/bootstrap.sh
+```
+
+Deploy the current branch to EC2:
+
+```bash
+cd /Users/manmohan/Documents/Karathpy/Boba-Tea
+scripts/aws/deploy.sh
+```
+
+GitHub Actions deployment is configured in [deploy-aws.yml](/Users/manmohan/Documents/Karathpy/Boba-Tea/.github/workflows/deploy-aws.yml) using AWS OIDC. The workflow assumes the role `arn:aws:iam::883107058766:role/GitHubActionsRecraftDeployRole`.

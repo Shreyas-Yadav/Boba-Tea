@@ -38,6 +38,22 @@ class ScanResponse(BaseModel):
     provider_notice: str | None = None
     created_at: datetime
     ideas: list[Idea]
+    timings_ms: dict[str, int] = Field(default_factory=dict)
+
+
+class TutorialLinksRequest(BaseModel):
+    detected_label: str
+    idea_id: str
+    idea_title: str
+    idea_description: str
+    search_query: str
+
+
+class TutorialLinksResponse(BaseModel):
+    idea_id: str
+    tutorial_links: list[TutorialLink]
+    links_mode: Literal["grounded", "fallback"]
+    timings_ms: dict[str, int] = Field(default_factory=dict)
 
 
 class GeminiIdea(BaseModel):
@@ -113,3 +129,4 @@ class VisualizationResponse(BaseModel):
     mime_type: str
     image_base64: str
     caption: str
+    timings_ms: dict[str, int] = Field(default_factory=dict)
